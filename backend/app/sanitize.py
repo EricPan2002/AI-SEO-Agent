@@ -1,0 +1,61 @@
+"""HTML 淨化：保證送到前端的內容一定是安全、乾淨的片段。
+
+為什麼需要這一層？因為前端要用 dangerouslySetInnerHTML 渲染預覽，
+而 LLM 的輸出本質上是「不可信輸入」——它可能被使用者輸入的內容影響
+（prompt injection），也可能自己夾帶 Markdown 圍欄或多餘的外層標籤。
+
+原則：prompt 負責「請你這樣寫」，程式負責「保證就是這樣」。
+只靠 prompt 約束等於沒有防線，因為那是機率問題不是保證。
+"""
+
+import re
+
+import bleach
+
+# 白名單：只允許這些標籤，其餘一律剝掉（內容保留）。
+# 用白名單而不是黑名單——黑名單永遠列不完，白名單只放進確定安全的。
+ALLOWED_TAGS = {
+    "h1",
+    "h2",
+    "h3",
+    "p",
+    "ul",
+    "ol",
+    "li",
+    "strong",
+    "em",
+    "blockquote",
+    "br",
+}
+
+# 不允許任何屬性：沒有 style 就沒有 CSS 注入，沒有 href 就沒有惡意連結，
+# 沒有 onclick 就沒有事件處理器。這篇文章的預覽不需要它們。
+ALLOWED_ATTRIBUTES: dict[str, list[str]] = {}
+
+# 模型有時仍會習慣性地用 ```html ... ``` 把輸出包起來
+_CODE_FENCE = re.compile(r"^\s*```(?:html)?\s*|\s*```\s*$", re.IGNORECASE)
+
+_TAG = re.compile(r"<[^>]+>")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def sanitize_html(raw: str) -> str:
+    """剝掉 Markdown 圍欄與所有不在白名單內的標籤。"""
+    text = _CODE_FENCE.sub("", raw.strip())
+    cleaned = bleach.clean(
+        text,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRIBUTES,
+        strip=True,  # 遇到不允許的標籤時剝掉標籤本身，但保留裡面的文字
+    )
+    return cleaned.strip()
+
+
+def count_words(html: str) -> int:
+    """粗略統計字數。
+
+    中文沒有空格分詞，所以直接數「非空白字元數」比數空格分隔的詞更有意義。
+    這只是給使用者看的參考值，不需要精確。
+    """
+    text = _TAG.sub("", html)
+    return len(_WHITESPACE.sub("", text))
