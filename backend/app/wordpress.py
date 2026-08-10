@@ -22,6 +22,7 @@ import httpx
 
 from .config import get_settings
 from .errors import AppError, ErrorCode
+from .sanitize import strip_leading_h1
 from .schemas import PublishResponse
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,13 @@ class WordPressClient:
     async def create_post(
         self, *, title: str, html: str, status: str = "draft"
     ) -> PublishResponse:
-        payload = {"title": title, "content": html, "status": status}
+        # WordPress 的標題是獨立欄位，佈景主題會自己把它渲染成 <h1>。
+        # 內文若再帶一個 <h1>，後台編輯器與前台都會看到標題重複出現。
+        payload = {
+            "title": title,
+            "content": strip_leading_h1(html),
+            "status": status,
+        }
         data = await self._request("POST", "/posts", json=payload)
 
         post_id = data["id"]
@@ -100,15 +107,30 @@ class WordPressClient:
         這層轉譯讓「換掉 WordPress 改用別的 CMS」時，前端完全不用改。
         """
         try:
-            body = response.json()
-            wp_code = body.get("code", "")
-            wp_message = body.get("message", "")
+            body: dict[str, Any] | None = response.json()
+            wp_code = str(body.get("code", "")) if body else ""
+            wp_message = str(body.get("message", "")) if body else ""
         except ValueError:
-            wp_code, wp_message = "", response.text[:200]
+            body, wp_code, wp_message = None, "", ""
 
         logger.error(
-            "WordPress 回應 %s [%s] %s", response.status_code, wp_code, wp_message
+            "WordPress 回應 %s [%s] %s",
+            response.status_code,
+            wp_code,
+            wp_message or response.text[:300],
         )
+
+        if body is None:
+            # 回應不是 JSON，代表這個請求根本沒進到 WordPress 的 REST API，
+            # 而是被前面的網頁伺服器擋下了（Local 站台停止時 nginx 會回 405 錯誤頁）。
+            # 把那頁 HTML 原封不動顯示給使用者沒有任何意義，
+            # 要翻成他實際能採取行動的訊息。
+            return AppError(
+                ErrorCode.WP_UNREACHABLE,
+                f"WordPress 沒有正常回應（HTTP {response.status_code}），"
+                "請確認 Local 的 ai-seo 站台已啟動",
+                http_status=502,
+            )
 
         if response.status_code in (401, 403):
             return AppError(
@@ -124,8 +146,10 @@ class WordPressClient:
                 http_status=502,
             )
 
+        # 截斷長度，避免上游的長訊息塞爆前端的提示框
+        detail = (wp_message[:120] or f"HTTP {response.status_code}").strip()
         return AppError(
             ErrorCode.WP_REJECTED,
-            f"WordPress 拒絕了這篇文章（{wp_message or response.status_code}）",
+            f"WordPress 拒絕了這篇文章（{detail}）",
             http_status=502,
         )

@@ -38,6 +38,9 @@ _CODE_FENCE = re.compile(r"^\s*```(?:html)?\s*|\s*```\s*$", re.IGNORECASE)
 _TAG = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
 
+# 文章開頭的 <h1>…</h1>
+_LEADING_H1 = re.compile(r"\A\s*<h1[^>]*>.*?</h1>\s*", re.IGNORECASE | re.DOTALL)
+
 
 def sanitize_html(raw: str) -> str:
     """剝掉 Markdown 圍欄與所有不在白名單內的標籤。"""
@@ -49,6 +52,20 @@ def sanitize_html(raw: str) -> str:
         strip=True,  # 遇到不允許的標籤時剝掉標籤本身，但保留裡面的文字
     )
     return cleaned.strip()
+
+
+def strip_leading_h1(html: str) -> str:
+    """移除開頭的 <h1>，供發布到 WordPress 時使用。
+
+    為什麼要拿掉？因為 WordPress 的資料模型把「標題」和「內文」分成兩個欄位，
+    標題會由佈景主題自己渲染成 <h1>。我們如果連內文也帶一個 <h1>，
+    後台和前台就會看到標題出現兩次。
+
+    但前端預覽仍然保留 <h1>——那裡是一份獨立的 HTML 文件，需要自己的主標題，
+    題目也要求產出的文章要包含 <h1>。
+    所以差異不在「文章對不對」，而在「送去的地方對標題的定義不同」。
+    """
+    return _LEADING_H1.sub("", html, count=1).strip()
 
 
 def count_words(html: str) -> int:
